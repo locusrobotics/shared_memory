@@ -1,6 +1,6 @@
 use std::num::NonZeroUsize;
 use std::os::unix::io::RawFd;
-use std::ptr::null_mut;
+use std::ptr::{null_mut, NonNull};
 
 use crate::log::*;
 use nix::fcntl::OFlag;
@@ -25,12 +25,12 @@ pub struct MapData {
     //Total size of the mapping
     pub map_size: usize,
     //Pointer to the first address of our mapping
-    pub map_ptr: *mut u8,
+    pub map_ptr: Option<NonNull<u8>>,
 }
 
 impl MapData {
     pub fn as_mut_ptr(&self) -> *mut u8 {
-        self.map_ptr
+        self.map_ptr.map(|ptr| ptr.as_ptr()).unwrap_or(null_mut())
     }
 }
 
@@ -39,13 +39,13 @@ impl Drop for MapData {
     ///Takes care of properly closing the SharedMem (munmap(), shmem_unlink(), close())
     fn drop(&mut self) {
         //Unmap memory
-        if !self.map_ptr.is_null() {
+        if let Some(ptr) = self.map_ptr {
             trace!(
                 "munmap(map_ptr:{:p},map_size:{})",
                 self.map_ptr,
                 self.map_size
             );
-            if let Err(_e) = unsafe { munmap(self.map_ptr as *mut _, self.map_size) } {
+            if let Err(_e) = unsafe { munmap(ptr.as_ptr() as *mut _, self.map_size) } {
                 debug!("Failed to munmap() shared memory mapping : {}", _e);
             };
         }
@@ -111,7 +111,7 @@ pub fn create_mapping(unique_id: &str, map_size: usize) -> Result<MapData, Shmem
         unique_id: String::from(unique_id),
         map_fd: shmem_fd,
         map_size,
-        map_ptr: null_mut(),
+        map_ptr: None,
     };
 
     //Enlarge the memory descriptor file size to the requested map size
@@ -143,7 +143,8 @@ pub fn create_mapping(unique_id: &str, map_size: usize) -> Result<MapData, Shmem
                 new_map.map_fd,
                 v
             );
-            v as *mut _
+
+            NonNull::new(v as *mut _)
         }
         Err(e) => return Err(ShmemError::MapCreateFailed(e as u32)),
     };
@@ -182,7 +183,7 @@ pub fn open_mapping(
         unique_id: String::from(unique_id),
         map_fd: shmem_fd,
         map_size: 0,
-        map_ptr: null_mut(),
+        map_ptr: None,
     };
 
     //Get mmap size
@@ -214,7 +215,7 @@ pub fn open_mapping(
                 new_map.map_fd,
                 v
             );
-            v as *mut _
+            NonNull::new(v as *mut _)
         }
         Err(e) => return Err(ShmemError::MapOpenFailed(e as u32)),
     };
